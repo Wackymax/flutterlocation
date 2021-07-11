@@ -55,6 +55,11 @@ public class FlutterLocation
     private LocationSettingsRequest mLocationSettingsRequest;
     public LocationCallback mLocationCallback;
 
+    @TargetApi(Build.VERSION_CODES.N)
+    private OnNmeaMessageListener mMessageListener;
+
+    private Double mLastMslAltitude;
+
     // Parameters of the request
     private long updateIntervalMilliseconds = 5000;
     private long fastestUpdateIntervalMilliseconds = updateIntervalMilliseconds / 2;
@@ -105,6 +110,10 @@ public class FlutterLocation
             }
             mFusedLocationClient = null;
             mSettingsClient = null;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && locationManager != null) {
+                locationManager.removeNmeaListener(mMessageListener);
+                mMessageListener = null;
+            }
         }
     }
 
@@ -243,8 +252,13 @@ public class FlutterLocation
                     loc.put("isMock", (double) 0);
                 }
 
-                loc.put("altitude", location.getAltitude());
-                    
+                // Using NMEA Data to get MSL level altitude
+                if (mLastMslAltitude == null || Build.VERSION.SDK_INT < Build.VERSION_CODES.N) {
+                    loc.put("altitude", location.getAltitude());
+                } else {
+                    loc.put("altitude", mLastMslAltitude);
+                }
+
                 loc.put("speed", (double) location.getSpeed());
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     loc.put("speed_accuracy", (double) location.getSpeedAccuracyMetersPerSecond());
@@ -265,6 +279,23 @@ public class FlutterLocation
                 }
             }
         };
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            mMessageListener = (message, timestamp) -> {
+                if (message.startsWith("$")) {
+                    String[] tokens = message.split(",");
+                    String type = tokens[0];
+
+                    // Parse altitude above sea level, Detailed description of NMEA string here
+                    // http://aprs.gids.nl/nmea/#gga
+                    if (type.startsWith("$GPGGA") && tokens.length > 9) {
+                        if (!tokens[9].isEmpty()) {
+                            mLastMslAltitude = Double.parseDouble(tokens[9]);
+                        }
+                    }
+                }
+            };
+        }
     }
 
     /**
@@ -390,7 +421,10 @@ public class FlutterLocation
         }
         mSettingsClient.checkLocationSettings(mLocationSettingsRequest)
                 .addOnSuccessListener(activity, locationSettingsResponse -> {
-                   
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                        locationManager.addNmeaListener(mMessageListener, null);
+                    }
+
                     if (mFusedLocationClient != null) {
                         mFusedLocationClient
                                 .requestLocationUpdates(mLocationRequest, mLocationCallback, Looper.myLooper());
@@ -412,7 +446,9 @@ public class FlutterLocation
                         ApiException ae = (ApiException) e;
                         int statusCode = ae.getStatusCode();
                         if (statusCode == LocationSettingsStatusCodes.SETTINGS_CHANGE_UNAVAILABLE) {// This error code happens during AirPlane mode.
-                            
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                                locationManager.addNmeaListener(mMessageListener, null);
+                            }
                             mFusedLocationClient.requestLocationUpdates(mLocationRequest, mLocationCallback,
                                     Looper.myLooper());
                         } else {// This should not happen according to Android documentation but it has been
